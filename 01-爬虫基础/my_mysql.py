@@ -158,8 +158,8 @@ class MySqlHelper(object):
         self.execute(sql, *(values))
 
 if __name__ == '__main__':
-    db = MySqlHelper('rm-8vb19av8t9y19ng2t1o.mysql.zhangbei.rds.aliyuncs.com','toutiao_data','myl','MYL_root')
+    db = MySqlHelper('host','db','username','password')
 
-    sql = 'select * from convert_cookie where id=%s'
+    sql = 'select * from table_name where id=%s'
     data = db.get(sql,2)
     print(data)
