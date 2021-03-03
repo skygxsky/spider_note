@@ -1,11 +1,14 @@
 import redis
 
-# r = redis.Redis(host='localhost',port=6379,db=0)
-# # r.set('guo','shuai')
+r = redis.Redis(host='localhost',port=6379,db=0)
+# r.set('guo','shuai')
+# r.set('guo','shuai1')
+r.rpush('k1','a','b')
 # print(r.get('guo'))
-# # 多少条数据
+print(r.lrange('k1',0,-1))
+# 多少条数据
 # print(r.dbsize())
-# # 清空r中的shuju
+# 清空r中的shuju
 # r.flushdb()
 
 class UrlDb(object):
