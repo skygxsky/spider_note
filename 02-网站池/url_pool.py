@@ -2,6 +2,209 @@ import pickle
 import redis
 import time
 import urllib.parse as urlparse
+import zlib
+import farmhash
+import traceback
+import pymysql
+import logging
+import time
+import functions as fn
+import config
+import requests
+import cchardet
+
+class MyDownloader(object):
+
+    @classmethod
+    def downloader(cls,url,timeout=10,headers=None,debug=False,binary=False):
+        """
+        :param url:
+        :param timeout:
+        :param headers:
+        :param debug:
+        :param binary: 请求结果是图片…………
+        :return:
+        """
+        _headers = {
+            'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36'
+        }
+        redirected_url = url # 重定向
+        if headers:
+            _headers = headers
+        try:
+            response = requests.get(url,headers=_headers,timeout=timeout)
+            if binary:
+                html = response.content
+            else:
+                encoding = cchardet.detect(response.content)['encoding']
+                html = response.content.decode(encoding)
+            status = response.status_code
+            redirected_url = response.url
+        except:
+            if debug:
+                traceback.print_exc()
+            message = 'failed downloads:%s'%(url)
+            print(message)
+            if binary:
+                html = b''
+            else:
+                html = ''
+            status = 0
+        return status,html,redirected_url
+
+class MySqlHelper(object):
+    """
+    max_idle_time 数据库连接时长
+    """
+    def __init__(self,host,database,user=None,password=None,port=3306,
+                 max_idle_time = 7*3600,
+                 connect_timeout = 10,
+                 time_zone = "+0:00",charset='utf8mb4',sql_mode="TRADITIONAL"
+                 ):
+        self.host = host
+        self.database = database
+        self.max_idle_time = float(max_idle_time)
+
+        args = dict(use_unicode=True,charset=charset,database=database,
+                    init_command="set time_zone = '%s'"%(time_zone),
+                    cursorclass=pymysql.cursors.DictCursor,
+                    connect_timeout=connect_timeout,sql_mode=sql_mode)
+        if user is not None:
+            args['user'] = user
+        if password is not None:
+            args['password'] = password
+
+        if "/" in host:
+            args['unix_socket'] = host
+        else:
+            self.socket = None
+            pair = host.split(':')
+            if len(pair) == 2:
+                args['host'] = pair[0]
+                args['port'] = int(pair[1])
+            else:
+                args['host'] = host
+                args['port'] = 3306
+        if port:
+            args['port'] = port
+
+        self._db = None
+        self._db_args = args
+        self._last_use_time = time.time()
+        try:
+            self.reconnect()
+        except Exception:
+            logging.error('cannot connect to mysql no %s'%(self.host),exc_info=True)
+
+    def _ensure_connected(self):
+        if (self._db is None or (time.time() - self._last_use_time > self.max_idle_time)):
+            self.reconnect()
+        self._last_use_time = time.time()
+
+    def _cursor(self):
+        self._ensure_connected()
+        return self._db.cursor()
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        if getattr(self,"_db",None) is not None:
+            self._db.close()
+            self._db = None
+
+    def reconnect(self):
+        self.close()
+        self._db = pymysql.connect(**self._db_args)
+        self._db.autocommit(True)
+
+    def query(self,query,*parameters,**kwparameters):
+        cursor = self._cursor()
+        try:
+            cursor.excute(query,kwparameters or parameters)
+            result = cursor.fetchall()
+            return result
+        finally:
+            cursor.close()
+
+    def get(self,query,*parameters,**kwparameters):
+        cursor = self._cursor()
+        try:
+            cursor.execute(query, kwparameters or parameters)
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+
+    def execute(self, query, *parameters, **kwparameters):
+        cursor = self._cursor()
+        try:
+            cursor.execute(query, kwparameters or parameters)
+            return cursor.lastrowid
+        except Exception as e:
+            if e.args[0] == 1062:
+                pass
+            else:
+                traceback.print_exc()
+                raise e
+        finally:
+            cursor.close()
+
+    def table_has(self, table_name, field, value):
+        if isinstance(value, str):
+            value = value.encode('utf8')
+        sql = 'SELECT %s FROM %s WHERE %s="%s"' % (
+            field,
+            table_name,
+            field,
+            value)
+        d = self.get(sql)
+        return d
+
+    def table_insert(self, table_name, item):
+
+        fields = list(item.keys())
+        values = list(item.values())
+        fieldstr = ','.join(fields)
+        valstr = ','.join(['%s'] * len(item))
+        for i in range(len(values)):
+            if isinstance(values[i], str):
+                values[i] = values[i].encode('utf8')
+        sql = 'INSERT INTO %s (%s) VALUES(%s)' % (table_name, fieldstr, valstr)
+        try:
+            last_id = self.execute(sql, *values)
+            return last_id
+        except Exception as e:
+            if e.args[0] == 1062:
+                # just skip duplicated item
+                pass
+            else:
+                traceback.print_exc()
+                print('sql:', sql)
+                print('item:')
+                for i in range(len(fields)):
+                    vs = str(values[i])
+                    if len(vs) > 300:
+                        print(fields[i], ' : ', len(vs), type(values[i]))
+                    else:
+                        print(fields[i], ' : ', vs, type(values[i]))
+                raise e
+
+    def table_update(self, table_name, updates,
+                     field_where, value_where):
+        '''updates is a dict of {field_update:value_update}'''
+        upsets = []
+        values = []
+        for k, v in updates.items():
+            s = '%s=%%s' % k
+            upsets.append(s)
+            values.append(v)
+        upsets = ','.join(upsets)
+        sql = 'UPDATE %s SET %s WHERE %s="%s"' % (
+            table_name,
+            upsets,
+            field_where, value_where,
+        )
+        self.execute(sql, *(values))
 
 class UrlDb(object):
 
@@ -191,3 +394,83 @@ class UrlPool(object):
 
     def empty(self):
         return self.waiting_count == 0
+
+class NewsSpider(object):
+
+    def __init__(self,name):
+        self.db = MySqlHelper(config.Config.db_host,config.Config.db_db,config.Config.username,config.Config.password)
+        self.logger = fn.init_file_logger(name + '.log')
+        self.urlpool = UrlPool(name)
+        self.hub_hosts = None
+        self.load_hubs()
+
+    def load_hubs(self):
+        sql = 'select url from crawler_hub'
+        data = self.db.query(sql)
+        self.hub_hosts = set()
+        hubs = []
+        for i in data:
+            host = urlparse.urlparse(i['url']).netloc
+            self.hub_hosts.add(host)
+            hubs.append(i['url'])
+        self.urlpool.set_hub(hubs,300)
+
+    def save_qo_sql(self,url,html):
+        urlhash = farmhash.hash64(url)
+        sql = 'select url from create_html where urlhash = "%s"'
+        d = self.db.get(sql,urlhash)
+        if d:
+            if d['url'] != url:
+                msg = 'farmhash collision:%s <=> %s'%(url,d['url'])
+                self.logger.error(msg)
+            return True
+        if isinstance(html,str):
+            html = html.encode('utf-8')
+        html_zlib = zlib.compress(html) # 压缩文本
+        sql = "insert into crawler_html(urlhash,url,html_zlib) values (%s,%s,%s)"
+        good = False
+        try:
+            self.db.execute(sql,urlhash,url,html_zlib)
+            good = True
+        except Exception as e:
+            if e.args[0] == 1062:
+                """重复"""
+                good = True
+                pass
+            else:
+                traceback.print_exc()
+                raise e
+        return good
+
+    def filter_good(self,urls):
+        goodlinks = []
+        for url in urls:
+            host = urlparse.urlparse(url).netloc
+            if host in self.hub_hosts:
+                goodlinks.append(url)
+        return goodlinks
+
+    def process(self,url,ishub):
+        status,html,redirected_url = MyDownloader.downloader(url)
+        self.urlpool.set_status(url,status)
+        if redirected_url != url:
+            self.urlpool.set_status(redirected_url,status)
+        # 提取hub网页中的链接，新闻网页中也有“相关新闻”的链接，按需求提取
+        if status != 200:
+            return
+        if ishub:
+            newlinks = ""
+            goodlinks = self.filter_good(newlinks)
+            print("%s/%s,goodlinks/newlinks"%(len(goodlinks),len(newlinks)))
+            self.urlpool.add_many(goodlinks)
+        else:
+            self.save_qo_sql(redirected_url,html)
+
+    def run(self):
+        while 1:
+            urls = self.urlpool.pop(5)
+            for url,ishub in urls.items():
+                self.process(url,ishub)
+if __name__ == '__main__':
+    crawler = NewsSpider('name')
+    crawler.run()
