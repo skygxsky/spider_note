@@ -25,6 +25,41 @@ async def fetch(session,url,headers=None,timeout=9):
         redirected_url = url
     return status,html,redirected_url
 
+def init_file_logger(fname):
+    # config logging
+    import logging
+    from logging.handlers import TimedRotatingFileHandler
+    ch = TimedRotatingFileHandler(fname, when="midnight")
+    ch.setLevel(logging.INFO)
+    # create formatter
+    fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    formatter = logging.Formatter(fmt)
+    # add formatter to ch
+    ch.setFormatter(formatter)
+    logger = logging.getLogger(fname)
+    # add ch to logger
+    logger.addHandler(ch)
+    return logger
+
+def extract_links_re(url, html):
+    '''use re module to extract links from html'''
+    newlinks = set()
+    aa = g_pattern_tag_a.findall(html)
+    for a in aa:
+        link = a[0].strip()
+        if not link:
+            continue
+        link = urlparse.urljoin(url, link)
+        link = clean_url(link)
+        if not link:
+            continue
+        newlinks.add(link)
+    return newlinks
+
+
+
+
+
 async def main(urls):
     async with aiohttp.ClientSession() as client:
         tasks = []
