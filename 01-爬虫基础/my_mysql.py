@@ -3,6 +3,7 @@ import time
 import logging
 import traceback
 
+
 class MySqlHelper(object):
     """
     max_idle_time 数据库连接时长

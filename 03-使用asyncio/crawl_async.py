@@ -75,7 +75,7 @@ class NewsCrawlerAsync(object):
 
     async def process(self,url,ishub):
         status,html,redirected_url = await my_downloader_aiohttp.fetch(self.session,url)
-        self.urlpool.set_status(url,stats)
+        self.urlpool.set_status(url,status)
         if redirected_url != url:
             self.urlpool.set_status(redirected_url,status)
         # 提取hub网页中的链接, 新闻网页中也有“相关新闻”的链接，按需提取
@@ -83,4 +83,41 @@ class NewsCrawlerAsync(object):
             return
         if ishub:
             newlinks = my_downloader_aiohttp.extract_links_re(redirected_url,html)
+            goodlinks = self.filter_good(newlinks)
+            print('%s/%s,goodlinks/newlinks'%(len(goodlinks),len(newlinks)))
+            self.urlpool.add_many(goodlinks)
+        else:
+            await self.save_to_db(redirected_url,html)
+        self._workers -= 1
 
+    async def loop_crawl(self):
+        await self.load_hubs()
+        last_rating_time = time.time()
+        counter = 0
+        while 1:
+            tasks = self.urlpool.pop(self._workers_max)
+            if not tasks:
+                print('not url to crawl,sleep')
+                await asyncio.sleep(3)
+                continue
+            for url,ishub in tasks.items():
+                self._workers += 1
+                counter += 1
+                print('crawl:',url)
+                asyncio.ensure_future(self.process(url,ishub))
+
+            gap = time.time() - last_rating_time
+            if gap > 5:
+                rate = counter / gap
+                print('\tloop_crawl rate:%s, counter:%s, worker:%s'%(round(rate,2),counter,self._workers))
+                last_rating_time = time.time()
+                counter = 0
+            if self._workers > self._workers_max:
+                print('======got workers_max ,sleep 3 sec to next worker =====')
+                await asyncio.sleep(3)
+
+    def run(self):
+        try:
+            self.loop.run_until_complete(self.loop_crawl())
+        except KeyboardInterrupt:
+            print('stopped by yourself!')
