@@ -1,7 +1,6 @@
 import threading
 from loguru import logger
 import time
-import pypinyin
 import pandas as pd
 from sqlalchemy import create_engine
 

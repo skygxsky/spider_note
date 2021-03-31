@@ -17,3 +17,10 @@ var obj2 = {a:3,
     fn()
 }}
 obj2.doFoo(obj.foo)
+
+Object.defineProperty(document,'cookie',{
+    set:function (val) {
+        debugger;
+        return
+    }
+})
